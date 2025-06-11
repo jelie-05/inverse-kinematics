@@ -1,0 +1,13 @@
+Input vector (ee_pose): tensor([[-0.6636,  1.5852]])
+Target output vector (joint_config): tensor([[-0.1619,  0.5469,  0.5293,  0.2239]])
+Predicted joint_config: tensor([[-0.5115,  1.8227, -0.1062,  0.1486]], device='cuda:0')
+Ground truth joint_config: tensor([[-0.1619,  0.5469,  0.5293,  0.2239]], device='cuda:0')
+L2 error: 1.469477
+Plot saved as sanity_check_plot.png
+Euclidean distances between corresponding joints:
+  Joint 0: 0.014967
+  Joint 1: 0.251202
+  Joint 2: 0.215919
+  Joint 3: 0.172617
+End-effector position error: 0.172617
+MSE error between q0 and q1: 0.096026
