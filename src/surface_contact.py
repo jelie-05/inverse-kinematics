@@ -5,26 +5,41 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-class RobotArm2D:
+class RobotArm2D_CP:
     def __init__(self, link_lengths, surface_radius=0.05):
         self.l = link_lengths  # torch.tensor([l1, l2, l3])
         self.surface_radius = surface_radius
-
+    
     def compute_ee_pose_and_orientation(self, x):
         """
-        x: (B, 4) tensor
-        Returns:
-          ee_pos: (B, 2)
-          ee_angle: (B,)
-        """
-        x_trans = x[:, 0]
-        theta1, theta2, theta3 = x[:, 1], x[:, 2], x[:, 3]
-        l1, l2, l3 = self.l
+        x: (N, n) tensor: 
+            - x[:, 0] = base y translation
+            - x[:, 1:] = joint angles (theta1, theta2, ..., theta_(n-1))    -> in global frame!
+        l: (n-1,) tensor: link lengths for each joint (l1, l2, ..., l_(n-1))
 
-        y1 = l1 * torch.cos(theta1) + l2 * torch.cos(theta2) + l3 * torch.cos(theta3)
-        y2 = x_trans + l1 * torch.sin(theta1) + l2 * torch.sin(theta2) + l3 * torch.sin(theta3)
-        ee_pos = torch.stack([y1, y2], dim=1)
-        ee_angle = theta3
+        Returns the (x, y) position and angle of the end-effector.
+        """
+        # Base translation along y-axis
+        y_trans = x[:, 0]
+        
+        # Joint angles (thetas)
+        thetas = x[:, 1:]
+        
+        # Link lengths (l1, l2, ..., l_(n-1))
+        link_lengths = self.l
+        
+        # Initialize the end-effector position components (x, y)
+        x_pos = torch.zeros(x.size(0)).to(device=link_lengths.device)  # x position of the end-effector
+        y_pos = y_trans.clone()         # y position starts with base translation
+
+        # Iterate through the links to compute the end-effector position
+        for i in range(thetas.size(1)):
+            x_pos += link_lengths[i] * torch.cos(thetas[:, i])  # Add x displacement from the link
+            y_pos += link_lengths[i] * torch.sin(thetas[:, i])  # Add y displacement from the link
+        
+        # Stack the x and y positions into a tensor to represent the end-effector's position
+        ee_pos = torch.stack([x_pos, y_pos], dim=1)
+        ee_angle = thetas[:, -1]
         return ee_pos, ee_angle
 
     def sample_surface_local(self, n_samples=10):
@@ -63,30 +78,29 @@ class RobotArm2D:
         rotated = torch.bmm(local_expanded, R).to(ee_pos_batch.device)  # (B, P, 2)
         translated = rotated + ee_pos_batch.unsqueeze(1)  # (B, P, 2)
         return translated
-
+    
     def compute_joint_positions(self, x):
-        """
-        x: (4,)
-        Returns: list of 4 joint positions
-        """
-        x_trans, theta1, theta2, theta3 = x[0], x[1], x[2], x[3]
-        l1, l2, l3 = self.l
+        x = x.squeeze()  # Directly use PyTorch tensor operations
+        
+        # Extract base translation and joint angles
+        y_trans = x[0]  # Base translation along y-axis
+        thetas = x[1:]  # Joint angles (theta1, theta2, ..., theta_(n-1))
+        
+        # Link lengths
+        link_lengths = self.l
 
-        base = torch.tensor([0.0, x_trans])
-        joint1 = base + torch.tensor([l1 * torch.cos(theta1), l1 * torch.sin(theta1)])
-        joint2 = joint1 + torch.tensor([l2 * torch.cos(theta2), l2 * torch.sin(theta2)])
-        ee = joint2 + torch.tensor([l3 * torch.cos(theta3), l3 * torch.sin(theta3)])
-        return [base, joint1, joint2, ee]
+        # Initialize the first joint at the base position
+        joint_positions = [torch.tensor([0, y_trans])]
+        
+        # Calculate positions of joints and the end-effector
+        for i in range(len(thetas)):
+            x_pos = joint_positions[-1][0] + link_lengths[i] * torch.cos(thetas[i])
+            y_pos = joint_positions[-1][1] + link_lengths[i] * torch.sin(thetas[i])
+            joint_positions.append(torch.tensor([x_pos, y_pos]))
+        return joint_positions
 
     def sample_contact_surface_global_batch(self, x_batch, n_samples_per_el=10):
-        """
-        x_batch: (B, 4)
-        n_samples_per_el: number of contact surface samples per element in the batch
-        Returns:
-            global_pts: (B, n_samples, 2)
-            ee_pos: (B, 2)
-            ee_angle: (B,)
-        """
+
         ee_pos, ee_angle = self.compute_ee_pose_and_orientation(x_batch)  # (B, 2), (B,)
         local_pts = self.sample_surface_local(n_samples_per_el)  # (P, 2)
         global_pts = self.transform_to_global_batch(local_pts, ee_pos, ee_angle)  # (B, P, 2)
@@ -207,13 +221,113 @@ class RobotArm2D:
         return fig
 
 
+class RobotArm2D:
+    def __init__(self, link_lengths):
+        self.l = link_lengths  # torch.tensor([l1, l2, l3])
+
+    def compute_ee_pose(self, x):
+        """
+        x: (N, n) tensor: 
+            - x[:, 0] = base y translation
+            - x[:, 1:] = joint angles (theta1, theta2, ..., theta_(n-1))    -> in global frame!
+        l: (n-1,) tensor: link lengths for each joint (l1, l2, ..., l_(n-1))
+
+        Returns the (x, y) position of the end-effector.
+        """
+        # Base translation along y-axis
+        y_trans = x[:, 0]
+        
+        # Joint angles (thetas)
+        thetas = x[:, 1:]
+        
+        # Link lengths (l1, l2, ..., l_(n-1))
+        link_lengths = self.l
+        
+        # Initialize the end-effector position components (x, y)
+        x_pos = torch.zeros(x.size(0))  # x position of the end-effector
+        y_pos = y_trans.clone()         # y position starts with base translation
+
+        # Iterate through the links to compute the end-effector position
+        for i in range(thetas.size(1)):
+            x_pos += link_lengths[i] * torch.cos(thetas[:, i])  # Add x displacement from the link
+            y_pos += link_lengths[i] * torch.sin(thetas[:, i])  # Add y displacement from the link
+        
+        # Stack the x and y positions into a tensor to represent the end-effector's position
+        ee_pos = torch.stack([x_pos, y_pos], dim=1)
+        return ee_pos
+
+
+    def plot_arm(self, x, title="Robot Arm", color='blue', y_sample=None):
+        """
+        x: joint configuration tensor of shape (N, n) 
+            - x[:, 0] = base y translation
+            - x[:, 1:] = joint angles (theta1, theta2, ..., theta_(n-1))
+        l: tensor of link lengths (n-1,)
+        y_sample: target end-effector position to overlay as a blue dot, shape (1, 2) or (2,)
+        """
+        x = x.squeeze().cpu().numpy()
+        
+        # Extract base translation and joint angles
+        y_trans = x[0]  # Base translation along y-axis
+        thetas = x[1:]  # Joint angles (theta1, theta2, ..., theta_(n-1))
+        
+        # Link lengths
+        link_lengths = self.l.cpu().numpy()
+
+        # Initialize the first joint at the base position
+        joint_positions = [(0, y_trans)]  # Starting with base (x=0, y=y_trans)
+        
+        # Calculate positions of joints and the end-effector
+        for i in range(len(thetas)):
+            x_pos = joint_positions[-1][0] + link_lengths[i] * torch.cos(thetas[i])
+            y_pos = joint_positions[-1][1] + link_lengths[i] * torch.sin(thetas[i])
+            joint_positions.append((x_pos, y_pos))
+        
+        # Extract the end-effector position
+        ee = joint_positions[-1]
+
+        # Plotting
+        fig, ax = plt.subplots()
+        
+        # Extract joint and end-effector x and y positions
+        xs, ys = zip(*joint_positions)
+        
+        # Plot arm
+        ax.plot(xs, ys, 'o-', color=color, linewidth=3, label="Arm")
+        
+        # Plot base triangle (symbolizing the base of the robot)
+        base_triangle = plt.Polygon([
+            (-0.1, y_trans), 
+            (0.1, y_trans), 
+            (0, y_trans - 0.15)
+        ], closed=True, color='gray')
+        ax.add_patch(base_triangle)
+
+        # Mark the End-Effector (EE)
+        ax.plot(ee[0], ee[1], 'ro', markersize=8, label="Predicted EE")
+        
+        # Plot y_sample if provided
+        if y_sample is not None:
+            y_sample = y_sample.squeeze().cpu().numpy()
+            ax.plot(y_sample[0], y_sample[1], 'bo', markersize=8, label="Target EE")
+        
+        # Set plot title and limits
+        ax.set_title(title)
+        ax.set_xlim(-1, np.sum(link_lengths) + 1)  # Adjust limits based on the total length
+        ax.set_ylim(-2, 2)
+        ax.set_aspect('equal')
+        ax.grid(True)
+        ax.legend()
+
+        return fig
+
 
 if __name__ == '__main__':
     torch.manual_seed(0)
     sigma = torch.tensor([0.25, 0.5, 0.5, 0.5])
     x_batch = torch.randn(2, 4) * sigma  # (B, 4)
 
-    arm = RobotArm2D(link_lengths=torch.tensor([0.5, 0.5, 1.0]))
+    arm = RobotArm2D_CP(link_lengths=torch.tensor([0.5, 0.5, 1.0]))
 
     outputs = arm.sample_contact_surface_global_batch(x_batch, n_samples_per_el=3)
 

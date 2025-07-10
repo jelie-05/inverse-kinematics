@@ -1,1 +1,1 @@
-from surface_contact import RobotArm2D
+from surface_contact import RobotArm2D_CP

@@ -11,111 +11,11 @@ from utils.dataloader import FKIKDataset
 from torch.utils.data import DataLoader, random_split
 from models.realnvp_1D import RealNVP1D
 import math
-from surface_contact import RobotArm2D  
-
-# add argparse for save_name
+from surface_contact import RobotArm2D_CP, RobotArm2D
 import argparse
+
 parser = argparse.ArgumentParser(description='Train RealNVP model for FK/IK')
 parser.add_argument('--save_name', type=str, required=True, help='Name to save the model and logs')
-
-
-# def compute_ee_pose(x, l):
-#     """
-#     x: (N, 4) tensor, where:
-#         x[:, 0] = base x translation
-#         x[:, 1], x[:, 2], x[:, 3] = theta1, theta2, theta3 (global angles)
-#     l: (3,) tensor of link lengths
-#     """
-#     x_trans = x[:, 0]
-#     theta1, theta2, theta3 = x[:, 1], x[:, 2], x[:, 3]
-#     l1, l2, l3 = l[0], l[1], l[2]
-
-#     y1 = l1 * torch.cos(theta1) + l2 * torch.cos(theta2) + l3 * torch.cos(theta3)
-#     y2 = x_trans + l1 * torch.sin(theta1) + l2 * torch.sin(theta2) + l3 * torch.sin(theta3)  # Allowing translation in y direction by x_trans
-
-#     y = torch.stack([y1, y2], dim=1)    # (x,y) end-effector position
-#     return y
-
-def compute_ee_pose(x,l):
-    """
-    x: (N, n) tensor: 
-        - x[:, 0] = base y translation
-        - x[:, 1:] = joint angles (theta1, theta2, ..., theta_(n-1))    -> in global frame!
-    l: (n-1,) tensor: link lengths for each joint (l1, l2, ..., l_(n-1))
-
-    Returns the (x, y) position of the end-effector.
-    """
-    # Base translation along y-axis
-    y_trans = x[:, 0]
-    
-    # Joint angles (thetas)
-    thetas = x[:, 1:]
-    
-    # Link lengths (l1, l2, ..., l_(n-1))
-    link_lengths = l
-    
-    # Initialize the end-effector position components (x, y)
-    x_pos = torch.zeros(x.size(0))  # x position of the end-effector
-    y_pos = y_trans.clone()         # y position starts with base translation
-
-    # Iterate through the links to compute the end-effector position
-    for i in range(thetas.size(1)):
-        x_pos += link_lengths[i] * torch.cos(thetas[:, i])  # Add x displacement from the link
-        y_pos += link_lengths[i] * torch.sin(thetas[:, i])  # Add y displacement from the link
-    
-    # Stack the x and y positions into a tensor to represent the end-effector's position
-    ee_pos = torch.stack([x_pos, y_pos], dim=1)
-    return ee_pos
-
-
-def plot_arm(x, l, title="Robot Arm", color='blue', y_sample=None):
-    """
-    x: joint configuration tensor of shape (1, 4)
-    l: tensor of link lengths (3,)
-    y_sample: target end-effector position to overlay as a blue dot, shape (1, 2) or (2,)
-    """
-    x = x.squeeze().cpu().numpy()
-    l1, l2, l3 = l[0].item(), l[1].item(), l[2].item()
-    
-    base_x, base_y = 0, x[0]
-    theta1, theta2, theta3 = x[1], x[2], x[3]
-
-    joint1 = (base_x, base_y)
-    joint2 = (base_x + l1 * np.cos(theta1), base_y + l1 * np.sin(theta1))
-    joint3 = (joint2[0] + l2 * np.cos(theta2), joint2[1] + l2 * np.sin(theta2))
-    ee     = (joint3[0] + l3 * np.cos(theta3), joint3[1] + l3 * np.sin(theta3))
-
-    fig, ax = plt.subplots()
-
-    # Plot arm
-    xs = [joint1[0], joint2[0], joint3[0], ee[0]]
-    ys = [joint1[1], joint2[1], joint3[1], ee[1]]
-    ax.plot(xs, ys, 'o-', color=color, linewidth=3, label="Arm")
-
-    # Plot base triangle
-    base_triangle = plt.Polygon([
-        (base_x - 0.1, base_y),
-        (base_x + 0.1, base_y),
-        (base_x, base_y - 0.15)
-    ], closed=True, color='gray')
-    ax.add_patch(base_triangle)
-
-    # Mark EE
-    ax.plot(ee[0], ee[1], 'ro', markersize=8, label="Predicted EE")
-
-    # Plot y_sample if provided
-    if y_sample is not None:
-        y_sample = y_sample.squeeze().cpu().numpy()
-        ax.plot(y_sample[0], y_sample[1], 'bo', markersize=8, label="Target EE")
-
-    ax.set_title(title)
-    ax.set_xlim(-1, 4)
-    ax.set_ylim(-2, 2)
-    ax.set_aspect('equal')
-    ax.grid(True)
-    ax.legend()
-
-    return fig
 
 
 def plot_y_distribution(y_all, title="EE Position Distribution"):
@@ -160,10 +60,11 @@ def train(model, experiment='contact_point', device='cpu', n_train=10, lr=1e-3, 
     l = torch.tensor([0.5, 0.5, 1.0], device=device)  # Link lengths
 
     if experiment == 'contact_point':
-        arm = RobotArm2D(link_lengths=l)
+        arm = RobotArm2D_CP(link_lengths=l)
         assert batch_size % num_cp_per_ee == 0, "Batch size must be divisible by num_samples_per_cp"
         batch_size_tmp = batch_size // num_cp_per_ee  # Adjust batch size for contact points
     elif experiment == 'ee_point':
+        arm = RobotArm2D(link_lengths=l)
         num_cp_per_ee = 1  # For end-effector point, we sample only one point per joint configuration
         batch_size_tmp = batch_size  # Use full batch size for end-effector points
     else:
@@ -226,7 +127,7 @@ def train(model, experiment='contact_point', device='cpu', n_train=10, lr=1e-3, 
 
         if experiment == 'ee_point':
             # End-effector position is a point in 2D space
-            y = compute_ee_pose(x, l)  # Compute end-effector positions from joint configurations
+            y = arm.compute_ee_pose(x)  # Compute end-effector positions from joint configurations
         elif experiment == 'contact_point':
             outputs = arm.sample_contact_surface_global_batch(x, n_samples_per_el=num_cp_per_ee)  # Sample contact surface points
             y = outputs['global_pts']  # Shape: (B * n_samples_per_el, 2)
@@ -310,7 +211,7 @@ def train(model, experiment='contact_point', device='cpu', n_train=10, lr=1e-3, 
 
             # Plot the robot arm from x_pred 
             if experiment == 'ee_point':
-                fig = plot_arm(x_pred, l, title="Eval Arm at Epoch {}".format(i), color='green', y_sample=y_eval)
+                fig = arm.plot_arm(x_pred, l, title="Eval Arm at Epoch {}".format(i), color='green', y_sample=y_eval)
             elif experiment == 'contact_point':
                 fig = arm.plot_arm(x_pred.squeeze(0), l, title="Eval Arm at Epoch {}".format(i), color='green', y_sample=y_eval)
 
@@ -328,7 +229,7 @@ def train(model, experiment='contact_point', device='cpu', n_train=10, lr=1e-3, 
 
             if experiment == 'ee_point':
                 # End-effector position is a point in 2D space
-                y = compute_ee_pose(x, l)  # Compute end-effector positions from joint configurations
+                y = arm.compute_ee_pose(x, l)  # Compute end-effector positions from joint configurations
             elif experiment == 'contact_point':
                 outputs = arm.sample_contact_surface_global_batch(x, n_samples_per_el=num_cp_per_ee)  # Sample contact surface points
                 y = outputs['global_pts']  # Shape: (B * n_samples_per_el, 2)
