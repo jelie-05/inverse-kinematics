@@ -11,28 +11,61 @@ from utils.dataloader import FKIKDataset
 from torch.utils.data import DataLoader, random_split
 from models.realnvp_1D import RealNVP1D
 import math
+from surface_contact import RobotArm2D  
+
 # add argparse for save_name
 import argparse
 parser = argparse.ArgumentParser(description='Train RealNVP model for FK/IK')
 parser.add_argument('--save_name', type=str, required=True, help='Name to save the model and logs')
 
 
-def compute_ee_pose(x, l):
-    """
-    x: (N, 4) tensor, where:
-        x[:, 0] = base x translation
-        x[:, 1], x[:, 2], x[:, 3] = theta1, theta2, theta3 (global angles)
-    l: (3,) tensor of link lengths
-    """
-    x_trans = x[:, 0]
-    theta1, theta2, theta3 = x[:, 1], x[:, 2], x[:, 3]
-    l1, l2, l3 = l[0], l[1], l[2]
+# def compute_ee_pose(x, l):
+#     """
+#     x: (N, 4) tensor, where:
+#         x[:, 0] = base x translation
+#         x[:, 1], x[:, 2], x[:, 3] = theta1, theta2, theta3 (global angles)
+#     l: (3,) tensor of link lengths
+#     """
+#     x_trans = x[:, 0]
+#     theta1, theta2, theta3 = x[:, 1], x[:, 2], x[:, 3]
+#     l1, l2, l3 = l[0], l[1], l[2]
 
-    y1 = l1 * torch.cos(theta1) + l2 * torch.cos(theta2) + l3 * torch.cos(theta3)
-    y2 = x_trans + l1 * torch.sin(theta1) + l2 * torch.sin(theta2) + l3 * torch.sin(theta3)  # Allowing translation in y direction by x_trans
+#     y1 = l1 * torch.cos(theta1) + l2 * torch.cos(theta2) + l3 * torch.cos(theta3)
+#     y2 = x_trans + l1 * torch.sin(theta1) + l2 * torch.sin(theta2) + l3 * torch.sin(theta3)  # Allowing translation in y direction by x_trans
 
-    y = torch.stack([y1, y2], dim=1)    # (x,y) end-effector position
-    return y
+#     y = torch.stack([y1, y2], dim=1)    # (x,y) end-effector position
+#     return y
+
+def compute_ee_pose(x,l):
+    """
+    x: (N, n) tensor: 
+        - x[:, 0] = base y translation
+        - x[:, 1:] = joint angles (theta1, theta2, ..., theta_(n-1))    -> in global frame!
+    l: (n-1,) tensor: link lengths for each joint (l1, l2, ..., l_(n-1))
+
+    Returns the (x, y) position of the end-effector.
+    """
+    # Base translation along y-axis
+    y_trans = x[:, 0]
+    
+    # Joint angles (thetas)
+    thetas = x[:, 1:]
+    
+    # Link lengths (l1, l2, ..., l_(n-1))
+    link_lengths = l
+    
+    # Initialize the end-effector position components (x, y)
+    x_pos = torch.zeros(x.size(0))  # x position of the end-effector
+    y_pos = y_trans.clone()         # y position starts with base translation
+
+    # Iterate through the links to compute the end-effector position
+    for i in range(thetas.size(1)):
+        x_pos += link_lengths[i] * torch.cos(thetas[:, i])  # Add x displacement from the link
+        y_pos += link_lengths[i] * torch.sin(thetas[:, i])  # Add y displacement from the link
+    
+    # Stack the x and y positions into a tensor to represent the end-effector's position
+    ee_pos = torch.stack([x_pos, y_pos], dim=1)
+    return ee_pos
 
 
 def plot_arm(x, l, title="Robot Arm", color='blue', y_sample=None):
@@ -111,7 +144,7 @@ def get_warmup_cosine_schedule(warmup_steps, total_steps, min_lr_ratio=0.05):
     return lr_lambda
     
 
-def train(model, train_direction='fk', device='cpu', n_train=10, lr=1e-3, batch_size=128, writer=None):
+def train(model, experiment='contact_point', device='cpu', n_train=10, lr=1e-3, batch_size=128, writer=None, num_cp_per_ee=1):
     i = 0
     model = model.to(device)
 
@@ -125,6 +158,16 @@ def train(model, train_direction='fk', device='cpu', n_train=10, lr=1e-3, batch_
 
     # Robot arm data:
     l = torch.tensor([0.5, 0.5, 1.0], device=device)  # Link lengths
+
+    if experiment == 'contact_point':
+        arm = RobotArm2D(link_lengths=l)
+        assert batch_size % num_cp_per_ee == 0, "Batch size must be divisible by num_samples_per_cp"
+        batch_size_tmp = batch_size // num_cp_per_ee  # Adjust batch size for contact points
+    elif experiment == 'ee_point':
+        num_cp_per_ee = 1  # For end-effector point, we sample only one point per joint configuration
+        batch_size_tmp = batch_size  # Use full batch size for end-effector points
+    else:
+        raise ValueError("Experiment must be either 'contact_point' or 'ee_point'")
     
     # Miscallaneous
     collected_y = []
@@ -179,8 +222,15 @@ def train(model, train_direction='fk', device='cpu', n_train=10, lr=1e-3, batch_
 
         # Generate a batch of x and corresponding y
         sigma = torch.tensor([0.25, 0.5, 0.5, 0.5]).to(device)  # Standard deviations for joint configurations
-        x = torch.randn(batch_size, 4).to(device) * sigma
-        y = compute_ee_pose(x, l)  # Compute end-effector positions from joint configurations
+        x = torch.randn(batch_size_tmp, 4).to(device) * sigma
+
+        if experiment == 'ee_point':
+            # End-effector position is a point in 2D space
+            y = compute_ee_pose(x, l)  # Compute end-effector positions from joint configurations
+        elif experiment == 'contact_point':
+            outputs = arm.sample_contact_surface_global_batch(x, n_samples_per_el=num_cp_per_ee)  # Sample contact surface points
+            y = outputs['global_pts']  # Shape: (B * n_samples_per_el, 2)
+            x = outputs['x_batch']  # Joint configurations corresponding to the sampled points
 
         # Forward pass through the model
         z, log_det = model(x)
@@ -216,7 +266,7 @@ def train(model, train_direction='fk', device='cpu', n_train=10, lr=1e-3, batch_
         # loss_mle = -torch.mean(log_p_z + log_det)
         loss_mle = -torch.mean(-0.5 * torch.sum(z_latent**2, dim=1) + log_det)  
 
-        # 4. MMD loss
+        # 4. MMD loss                                                                               
 
 
         loss = (loss_recon + loss_pred) + loss_mle * mle_scale
@@ -253,13 +303,16 @@ def train(model, train_direction='fk', device='cpu', n_train=10, lr=1e-3, batch_
             # Prepare input to inverse pass
             z_latent_sample = torch.randn((1, z_sample_dim), device=device)  # Random latent vector
             z_input = torch.cat([y_eval, z_latent_sample], dim=1)  # Concatenate target with latent
-
+    
             # Inverse pass to get joint config
             with torch.no_grad():
                 x_pred, _ = model.g(z_input)  # Shape (1, 4)
 
             # Plot the robot arm from x_pred 
-            fig = plot_arm(x_pred, l, title="Eval Arm at Epoch {}".format(i), color='green', y_sample=y_eval)
+            if experiment == 'ee_point':
+                fig = plot_arm(x_pred, l, title="Eval Arm at Epoch {}".format(i), color='green', y_sample=y_eval)
+            elif experiment == 'contact_point':
+                fig = arm.plot_arm(x_pred.squeeze(0), l, title="Eval Arm at Epoch {}".format(i), color='green', y_sample=y_eval)
 
             # Log to TensorBoard
             writer.add_figure("EvalArm/y_eval", fig, global_step=i)
@@ -268,11 +321,23 @@ def train(model, train_direction='fk', device='cpu', n_train=10, lr=1e-3, batch_
 
         # === Validation Loop ===
         with torch.no_grad():
-            # model.eval()
-            sigma = torch.tensor([0.25, 0.5, 0.5, 0.5]).to(device)  # Standard deviations for joint configurations
-            x = torch.randn(batch_size, 4).to(device) * sigma
+            model.eval()
 
-            y = compute_ee_pose(x, l)  # Compute end-effector positions from joint configurations
+            sigma = torch.tensor([0.25, 0.5, 0.5, 0.5]).to(device)  # Standard deviations for joint configurations
+            x = torch.randn(batch_size_tmp, 4).to(device) * sigma
+
+            if experiment == 'ee_point':
+                # End-effector position is a point in 2D space
+                y = compute_ee_pose(x, l)  # Compute end-effector positions from joint configurations
+            elif experiment == 'contact_point':
+                outputs = arm.sample_contact_surface_global_batch(x, n_samples_per_el=num_cp_per_ee)  # Sample contact surface points
+                y = outputs['global_pts']  # Shape: (B * n_samples_per_el, 2)
+                x = outputs['x_batch']  # Joint configurations corresponding to the sampled points
+
+                # Ensuring the order of x and y is shuffled after repeating by num_cp_per_ee
+                perm = torch.randperm(x.shape[0])
+                x = x[perm]
+                y = y[perm]
 
             z, log_det = model(x)
 
@@ -367,20 +432,23 @@ if __name__ == "__main__":
     num_blocks = 8  # Number of blocks in the RealNVP model
     hidden_dim = 128  # Hidden dimension for the affine coupling layers
     learning_rate = 5e-3  # Learning rate for the optimizer
+    num_cp_per_ee = 2  # Number of samples per contact point for the contact point experiment
+
+    # Problem parameters
+    dim = 4
 
     # Direction
-    train_direction = 'fk'  # or 'ik'
+    experiment = 'contact_point'  # 'ee_point' or 'contact_point'
 
     # Device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
 
-    # Model
-    dim = 4 if train_direction == 'fk' else 2  # 4 for joint configurations, 2 for end-effector positions
+    # Model 
     prior = distributions.Normal(   # isotropic standard normal distribution
             torch.tensor(0.).to(device), torch.tensor(1.).to(device))
     model = RealNVP1D(dim=dim, hidden_dim=hidden_dim, num_blocks=num_blocks, prior=prior, writer=writer)
 
     # Train
-    train(model, train_direction=train_direction, device=device, n_train=i, lr=learning_rate, batch_size=batch_size, writer=writer)
+    train(model, experiment=experiment, device=device, n_train=i, lr=learning_rate, batch_size=batch_size, writer=writer, num_cp_per_ee=num_cp_per_ee)
     writer.close()
