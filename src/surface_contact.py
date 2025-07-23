@@ -219,6 +219,79 @@ class RobotArm2D_CP:
         ax.legend()
 
         return fig
+    
+    def plot_arm_batch(self, x_batch, title="Robot Arm", color='blue', y_sample=None):
+        """
+        x_batch: tensor of shape (B, 4), where B is the number of joint configurations
+        l: tensor of link lengths (3,)
+        y_sample: target end-effector position to overlay as a green star, shape (1, 2) or (2,)
+        """
+
+        if isinstance(x_batch, torch.Tensor):
+            x_batch = x_batch.cpu()
+
+        if x_batch.ndim == 1:
+            x_batch = x_batch.unsqueeze(0)
+
+        fig, ax = plt.subplots(figsize=(12, 12))
+
+        for i, x in enumerate(x_batch):
+            joint_positions = self.compute_joint_positions(x)
+            joint_positions = torch.stack(joint_positions, dim=0)  # (num_joints+1, 2)
+
+            ee_pose = joint_positions[-1]
+            ee_angle = x[-1]
+
+            xs = joint_positions[:, 0].detach().numpy()
+            ys = joint_positions[:, 1].detach().numpy()
+            base_x, base_y = xs[0], ys[0]
+            ee = joint_positions[-1].detach().numpy()
+
+            alpha = 1.0 if i == 0 else 0.1
+            if i != 0:
+                ax.plot(xs, ys, '+-', linewidth=3, alpha=alpha, color='skyblue')
+            else:
+                ax.plot(xs, ys, '+-', linewidth=3, alpha=alpha, color='red', label="Arm" if i == 0 else None)
+
+            # Plot semicircle for end-effector surface
+            if ee_pose is not None and ee_angle is not None:
+                theta_full = torch.linspace(-torch.pi / 2, torch.pi / 2, 100)
+                x_full = self.surface_radius * torch.cos(theta_full)
+                y_full = self.surface_radius * torch.sin(theta_full)
+                semicircle_local = torch.stack([x_full, y_full], dim=1)
+
+                if isinstance(ee_angle, torch.Tensor):
+                    ee_angle = ee_angle.item()
+                R = torch.tensor([
+                    [torch.cos(torch.tensor(ee_angle)), -torch.sin(torch.tensor(ee_angle))],
+                    [torch.sin(torch.tensor(ee_angle)),  torch.cos(torch.tensor(ee_angle))]
+                ])
+                semicircle_global = (R @ semicircle_local.T).T + ee_pose
+                semicircle_global = semicircle_global.detach().numpy()
+                ax.plot(semicircle_global[:, 0], semicircle_global[:, 1], color='black', alpha=alpha, label="EE Surface" if i == 0 else None)
+
+            # Plot base triangle only for first arm
+            if i == 0:
+                base_triangle = plt.Polygon([
+                    (base_x - 0.1, base_y),
+                    (base_x + 0.1, base_y),
+                    (base_x, base_y - 0.15)
+                ], closed=True, color='gray')
+                ax.add_patch(base_triangle)
+
+        # Plot target EE if provided
+        if y_sample is not None:
+            target = y_sample[0].cpu().numpy()
+            ax.plot(target[0], target[1], 'bo', markersize=8, label="Target EE")
+
+        ax.set_title(title)
+        ax.set_xlim(-0.25, 3.5)
+        ax.set_ylim(-2, 2)
+        ax.set_aspect('equal')
+        ax.grid(True)
+        ax.legend()
+
+        return fig
 
 
 class RobotArm2D:
@@ -248,10 +321,12 @@ class RobotArm2D:
         y_pos = y_trans.clone()         # y position starts with base translation
 
         # Iterate through the links to compute the end-effector position
-        for i in range(thetas.size(1)):
-            x_pos += link_lengths[i] * torch.cos(thetas[:, i])  # Add x displacement from the link
-            y_pos += link_lengths[i] * torch.sin(thetas[:, i])  # Add y displacement from the link
-        
+        # for i in range(thetas.size(1)):
+        #     x_pos += link_lengths[i] * torch.cos(thetas[:, i])  # Add x displacement from the link
+        #     y_pos += link_lengths[i] * torch.sin(thetas[:, i])  # Add y displacement from the link
+        x_pos = (link_lengths * torch.cos(thetas)).sum(dim=1)
+        y_pos = (link_lengths * torch.sin(thetas)).sum(dim=1)
+
         # Stack the x and y positions into a tensor to represent the end-effector's position
         ee_pos = torch.stack([x_pos, y_pos], dim=1)
         return ee_pos
@@ -314,6 +389,71 @@ class RobotArm2D:
         # Set plot title and limits
         ax.set_title(title)
         ax.set_xlim(-1, np.sum(link_lengths) + 1)  # Adjust limits based on the total length
+        ax.set_ylim(-2, 2)
+        ax.set_aspect('equal')
+        ax.grid(True)
+        ax.legend()
+
+        return fig
+    
+    def plot_arm_batch(self, x_list, title="Robot Arm", color='blue', y_sample=None):
+        """
+        x_list: list or tensor of joint configurations of shape (B, n) or list of (n,)
+            - x[:, 0] = base y translation
+            - x[:, 1:] = joint angles (theta1, theta2, ..., theta_(n-1))
+        l: tensor of link lengths (n-1,)
+        y_sample: target end-effector position to overlay as a blue dot, shape (1, 2) or (2,)
+        """
+        # TODO: CORRECT THE PLOT FOR MULTIPLE CONFIGURATIONS
+
+        # Convert to list of NumPy arrays for uniformity
+        if torch.is_tensor(x_list):
+            x_list = x_list.cpu().numpy()
+        x_list = np.atleast_2d(x_list)  # Ensure shape (B, n)
+
+        link_lengths = self.l.cpu().numpy()
+
+        fig, ax = plt.subplots()
+
+        for i, x in enumerate(x_list):
+            y_trans = x[0]
+            thetas = x[1:]
+
+            joint_positions = [(0, y_trans)]
+            for j in range(len(thetas)):
+                x_pos = joint_positions[-1][0] + link_lengths[j] * np.cos(thetas[j])
+                y_pos = joint_positions[-1][1] + link_lengths[j] * np.sin(thetas[j])
+                joint_positions.append((x_pos, y_pos))
+
+            xs, ys = zip(*joint_positions)
+            # alpha = 1.0 if i == 0 else 0.3
+
+            # ax.plot(xs, ys, 'o-', color=color, linewidth=3, alpha=alpha, label=f"Arm {i+1}" if i == 0 else None)
+            alpha = 1.0 if i == 0 else 0.1
+            if i != 0:
+                ax.plot(xs, ys, '+-', linewidth=3, alpha=alpha, color='skyblue')
+            else:
+                ax.plot(xs, ys, '+-', linewidth=3, alpha=alpha, color='red', label="Arm" if i == 0 else None)
+
+            # Plot base triangle for the first arm only
+            if i == 0:
+                base_triangle = plt.Polygon([
+                    (-0.1, y_trans), 
+                    (0.1, y_trans), 
+                    (0, y_trans - 0.15)
+                ], closed=True, color='gray')
+                ax.add_patch(base_triangle)
+
+                # Mark the End-Effector
+                ee = joint_positions[-1]
+                ax.plot(ee[0], ee[1], 'ro', markersize=8, label="Predicted EE")
+
+        if y_sample is not None:
+            target = y_sample[0].cpu().numpy()
+            ax.plot(target[0], target[1], 'bo', markersize=8, label="Target EE")
+
+        ax.set_title(title)
+        ax.set_xlim(-1, np.sum(link_lengths) + 1)
         ax.set_ylim(-2, 2)
         ax.set_aspect('equal')
         ax.grid(True)

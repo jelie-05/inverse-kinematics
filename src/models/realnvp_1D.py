@@ -5,7 +5,7 @@ import numpy as np
 
 
 class AffineCoupling(nn.Module):
-    def __init__(self, dim, hidden_dim=128, mask_type='even', writer=None):
+    def __init__(self, dim, hidden_dim=128, mask_type='even'):
         super().__init__()
         self.dim = dim
         self.mask = self.create_mask(dim, mask_type)
@@ -24,9 +24,6 @@ class AffineCoupling(nn.Module):
         # Last linear layer: n.Linear(hidden_dim, dim * 2) initialization of this layer's weights and biases to zero
         # s = 0 and t = 1 -> then z is equal to x
 
-        self.i = 0
-        self.writer = writer
-
     def create_mask(self, dim, mask_type):
         mask = torch.zeros(dim)
         if mask_type == 'even':
@@ -36,7 +33,6 @@ class AffineCoupling(nn.Module):
         return mask
 
     def forward(self, x, reverse=False):
-        self.i += 1
         mask = self.mask.to(x.device)
 
         x_masked = x * mask
@@ -44,7 +40,7 @@ class AffineCoupling(nn.Module):
         log_s, t = st.chunk(2, dim=1)
 
         scale_factor = 2.0
-        scale_factor_t = 5.0
+        scale_factor_t = 2.0
         log_s = torch.tanh(log_s) * scale_factor
         t = torch.tanh(t) * scale_factor_t
 
@@ -57,35 +53,45 @@ class AffineCoupling(nn.Module):
             y = x * mask + (1 - mask) * (x * torch.exp(log_s) + t)
             log_det_jacobian = torch.sum((1 - mask) * log_s, dim=1)
 
-            self.writer.add_scalar('scalar/log_s_max', torch.max(torch.abs(log_s)), self.i)
-            self.writer.add_scalar('scalar/t_max', torch.max(torch.abs(t)), self.i)
-
-        return y, log_det_jacobian
+        logs = {
+            'log_s': torch.max(torch.abs(log_s)),
+            't': torch.max(torch.abs(t)),
+        }
+        return y, log_det_jacobian, logs
 
 
 class RealNVP1D(nn.Module):
-    def __init__(self, dim, hidden_dim=128, num_blocks=6, prior=None, writer=None):
+    def __init__(self, dim, hidden_dim=128, num_blocks=6, prior=None):
         super().__init__()
         self.blocks = nn.ModuleList()
         for i in range(num_blocks):
             mask_type = 'even' if i % 2 == 0 else 'odd'
-            self.blocks.append(AffineCoupling(dim, hidden_dim, mask_type, writer=writer))
+            self.blocks.append(AffineCoupling(dim, hidden_dim, mask_type))
 
         self.prior = prior if prior is not None else torch.distributions.Normal(0, 1)
 
     def f(self, x):
         log_det = torch.zeros(x.size(0), device=x.device)
+        logs_s_acc = 0
+        t_acc = 0
+        
         z = x
         for block in self.blocks:
-            z, ld = block(z)
+            z, ld, logs_block = block(z)
             log_det += ld
-        return z, log_det
+            logs_s_acc += logs_block['log_s']
+            t_acc += logs_block['t']
+        logs = {
+            'log_s': logs_s_acc,
+            't': t_acc,
+        }
+        return z, log_det, logs
 
     def g(self, z):
         log_det = torch.zeros(z.size(0), device=z.device)
         x = z
         for block in reversed(self.blocks):
-            x, ld = block(x, reverse=True)
+            x, ld, _ = block(x, reverse=True)
             log_det += ld
         return x, log_det
 
@@ -95,8 +101,8 @@ class RealNVP1D(nn.Module):
         return log_prior_prob + log_det_J
 
     def forward(self, x):
-        z, log_det = self.f(x)
-        return z, log_det
+        z, log_det, logs = self.f(x)
+        return z, log_det, logs
     
 if __name__ == "__main__":
     import torch
