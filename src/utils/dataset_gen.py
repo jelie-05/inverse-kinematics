@@ -19,7 +19,12 @@ def generate_fk_ik_dataset(n_samples, save_path='fk_ik_dataset.pt'):
 
 
 if __name__ == "__main__":
-    n_samples = 5  # Number of samples to generate
-    save_path = 'fk_ik_dataset.pt'  # Path to save the dataset
-    generate_fk_ik_dataset(n_samples, save_path)
-    print(f"Dataset saved to {save_path}")
+    n_train_val_samples = 500  # Number of samples to generate
+    save_path_train_val = 'fk_ik_dataset.pt'  # Path to save the dataset
+    generate_fk_ik_dataset(n_train_val_samples, save_path_train_val)
+
+    n_train_test_samples = 100 # Number of samples to generate for testing
+    save_path_test = 'fk_ik_dataset_test.pt'
+
+    print(f"Training and Vaidation Dataset saved to {save_path_train_val}")
+    print(f"Test Dataset saved to {save_path_test}")
