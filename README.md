@@ -1,15 +1,15 @@
-# tum-adlr-sose25-5
-Team 5 - Project 9
+# Team 5 - Invertible Neural Networks for Inverse Kinematics
 
-TODO:
-1. include uncertainty for fingertip position
+This project implements Invertible Neural Networks (INNs) using the RealNVP framework to solve the inverse kinematics problem for a simulated 4-DoF planar robotic manipulator. The framework supports multiple end-effector geometries and includes evaluation tools for accuracy and solution diversity.
 
-    Problem setup: during inference, still predict the joint angle configurations given EE position and sampling. However, there are more solutions for similar joint angle configuration introduced by the surface contact point.
+## Usage
 
-2. Implement MMD
+### Training
+```bash
+python3 -m src.train --config <config-yaml-file>
+```
 
-3. include self collision
-
-4. Evaluation Aspects
-
-5. implement 
+### Inference and Evaluation
+```bash
+python3 -m src.inference_eval --config <config-yaml-file>
+```
