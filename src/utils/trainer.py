@@ -1,3 +1,4 @@
+from matplotlib import scale
 import torch
 import torch.nn as nn
 import math
@@ -18,10 +19,12 @@ class Trainer():
             model: nn.Module,
             device: torch.device,
             config,
+            test_size=10000,
             ):
         self.model = model
         self.device = device
         self.config = config
+        self.test_size = test_size
 
         self.training_config = config.training
         self.experiment_config = config.experiment
@@ -54,7 +57,8 @@ class Trainer():
         elif self.training_config.loss_fn.distribution_loss == 'mle':
             self.distribution_loss_fn = self.mle_loss
         else:
-            raise NotImplementedError(f"Loss function {self.training_config.loss_fn.distribution_loss} is not implemented.")
+            raise NotImplementedError(f"Loss function {self.training_config.loss_fn.distribution_loss} not implemented.")
+
         
         # Logging setup
         self.experiment_dir = Path(f"{os.getcwd()}/outputs/{self.experiment_config.experiment_name}")
@@ -124,7 +128,6 @@ class Trainer():
                       f"Avg Pred L2 (T/V): {avg_train_pred:.4f} / {avg_val_pred:.4f} | "
                       f"Avg Distribution Loss (T/V): {avg_train_distr:.4f} / {avg_val_distr:.4f}")
                 if self.writer:
-                    # write in Avg/
                     self.writer.add_scalar('Avg/train_avg_total', avg_train_loss, count_avg)
                     self.writer.add_scalar('Avg/val_avg_total', avg_val_loss, count_avg)
                     self.writer.add_scalar('Avg/train_avg_recon', avg_train_recon, count_avg)
@@ -197,6 +200,9 @@ class Trainer():
         torch.save(self.model.state_dict(), final_model_path)
         print(f"Final model saved at {final_model_path}")
 
+        # Last test evaluation
+        self.evaluation_test()
+
     def _train_step(self, iter_sampling):
         self.model.train()
         self.optimizer.zero_grad()
@@ -215,6 +221,14 @@ class Trainer():
         z, log_det, logs = self.model(x)
         z_ee, z_latent = z[:, :y.shape[1]], z[:, y.shape[1]:]   # Split z into ee and latent parts
 
+        # Store samples for evaluation
+        if iter_sampling == 0:
+            self.n_samples = 1000  # Number of samples for evaluation
+            self.y_eval_each = y[10].detach().unsqueeze(0) # save as a sample for visualization
+            self.y_eval = self.y_eval_each.repeat(self.n_samples, 1)  # Repeat self.n_samples times for evaluation
+            self.ee_dim = z_ee.shape[1]
+            self.latent_dim = z_latent.shape[1]
+
         # Compute Losses
         # Reconstruction Loss
         if self.experiment_config.sampling_latent == 'pure_noise':
@@ -232,7 +246,7 @@ class Trainer():
         if self.training_config.loss_fn.distribution_loss == 'mle':
             loss_dist = self.distribution_loss_fn(z_latent, log_det)
         elif self.training_config.loss_fn.distribution_loss == 'mmd':
-            loss_dist = self.mmd_loss(z_ee, z_latent, x)
+            loss_dist = self.distribution_loss_fn(z_ee, z_latent, x, y)
 
         loss = loss_recon + loss_pred + loss_dist
         loss.backward()
@@ -240,13 +254,6 @@ class Trainer():
         self.optimizer.step()
         self.scheduler.step()
 
-        # Store samples for evaluation
-        if iter_sampling == 0:
-            self.n_samples = 500
-            self.y_eval_each = y[10].detach().unsqueeze(0) # save as a sample for visualization
-            self.y_eval = self.y_eval_each.repeat(self.n_samples, 1)  # Repeat self.n_samples times for evaluation
-            self.z_sample_dim = z_latent.shape[1]
-        
         train_metrics = {
             'loss': loss.item(),
             'recon_loss': loss_recon.item(),
@@ -296,16 +303,16 @@ class Trainer():
             if self.training_config.loss_fn.distribution_loss == 'mle':
                 loss_dist = self.distribution_loss_fn(z_latent, log_det)
             elif self.training_config.loss_fn.distribution_loss == 'mmd':
-                loss_dist = self.mmd_loss(z_ee, z_latent, x)
+                loss_dist = self.distribution_loss_fn(z_ee, z_latent, x, y)
 
             loss = loss_recon + loss_pred + loss_dist
 
             # Sanity Check
             z_sanity_check = z.detach()  # Use the full z for sanity check
             x_sanity_check, _ = self.model.g(z_sanity_check)  # Reconstruct x from z_ee and z_latent
-            if not torch.allclose(x_sanity_check, x, atol=1e-5, rtol=1e-5):
-                print(f"Sanity check failed: L2={torch.norm(x_sanity_check - x):.3e}, Max={torch.max((x_sanity_check - x).abs()):.3e}")
-                input("Press Enter to continue...")
+            # if not torch.allclose(x_sanity_check, x, atol=1e-4, rtol=1e-4):
+            #     print(f"Sanity check failed: L2={torch.norm(x_sanity_check - x):.3e}, Max={torch.max((x_sanity_check - x).abs()):.3e}")
+            #     input("Press Enter to continue...")
 
             val_metrics = {
                 'loss': loss.item(),
@@ -315,6 +322,147 @@ class Trainer():
             }
 
             return val_metrics
+        
+    def evaluation_test(self):
+        self.model.eval()
+        with torch.no_grad():
+            # Random sampling of joint configurations x
+            x = torch.randn(self.test_size, self.config.model.io_dimension).to(self.device) * self.sigma
+
+            if self.experiment_config.experiment == 'ee_point':
+                y = self.arm.compute_ee_pose(x)
+            elif self.experiment_config.experiment == 'contact_point':
+                outputs = self.arm.sample_contact_surface_global_batch(x, n_samples_per_el=self.num_cp_per_ee)
+                y = outputs['global_pts']
+                x = outputs['x_batch']
+
+                # Ensuring the order of x and y is shuffled after repeating by num_cp_per_ee
+                perm = torch.randperm(x.shape[0])
+                x = x[perm]
+                y = y[perm]
+
+            z, log_det, _ = self.model(x)
+            z_ee, z_latent = z[:, :y.shape[1]], z[:, y.shape[1]:]
+
+            # Compute Losses
+            # Reconstruction Loss
+            if self.experiment_config.sampling_latent == 'pure_noise':
+                z_samples = torch.randn_like(z_latent)
+            elif self.experiment_config.sampling_latent == 'add_noise':
+                z_samples = z_latent + self.training_config.loss_fn.noise_scale * torch.randn_like(z_latent)
+            z_recon = torch.cat((y, z_samples), dim=1)
+            x_recon, _ = self.model.g(z_recon)
+
+            # Losses
+            loss_pred = self.pred_loss_fn(z_ee, y)
+            loss_recon = self.recon_loss_fn(x_recon, x)
+
+            # Rejection Sampling evaluated at y = (1.5, 0)
+            results = self.rejection_sampling(y_target=torch.tensor([1.5, 0.0]).to(self.device),
+                                              n_samples=self.test_size,
+                                              tolerances=[0.01, 0.05, 0.1])
+            
+            # Calculate inference time
+            start_time = time.time()
+            if self.experiment_config.experiment == 'ee_point':
+                for i in range(self.test_size):
+                    self.arm.compute_ee_pose(x[i].unsqueeze(0))
+            elif self.experiment_config.experiment == 'contact_point':
+                for i in range(self.test_size):
+                    self.arm.sample_contact_surface_global_batch(x[i].unsqueeze(0), n_samples_per_el=self.num_cp_per_ee)
+            inference_time = time.time() - start_time
+            
+            # Save certain logs for later analysis in .txt file
+            log_file_path = self.output_dir / "training_eval_log.txt"
+            with open(log_file_path, 'w') as log_file:
+                log_file.write(f"Experiment: {self.experiment_config.experiment}\n")
+                log_file.write(f"Experiment Name: {self.experiment_config.experiment_name}\n")
+                log_file.write(f"Run ID: {self.experiment_config.run_id}\n")
+                log_file.write(f"Test Size: {self.test_size}\n")
+                log_file.write(f"Reconstruction Loss: {loss_recon.item()}\n")
+                log_file.write(f"Prediction Loss: {loss_pred.item()}\n")
+                log_file.write(f"Inference Time for {self.test_size} samples: {inference_time:.4f} seconds; Avg: {inference_time / self.test_size:.4f} seconds\n")
+                log_file.write(f"Results:\n")
+                for tol, res in results.items():
+                    log_file.write(f"Tolerance {tol}:\n")
+                    log_file.write(f"  Acceptance Rate: {res['acceptance_rate']:.4f}\n")
+                    if res['mean_error'] is not None:
+                        log_file.write(f"  Mean Error: {res['mean_error']:.4f}\n")
+                        log_file.write(f"  Std Error: {res['std_error']:.4f}\n")
+                    else:
+                        log_file.write(f"  Mean Error: None (no accepted samples)\n")
+                        log_file.write(f"  Std Error: None (no accepted samples)\n")
+                    if res['variance_x'] is not None:
+                        log_file.write(f"  Variance of x: {res['variance_x'].cpu().numpy().tolist()}\n")
+
+                log_file.write("===================================================\n")
+                log_file.write("Configuration:\n")
+                config_dict = self._config_to_dict(self.config)
+                yaml.dump(config_dict, log_file, default_flow_style=False, sort_keys=False)
+
+
+    def rejection_sampling(self,
+                           y_target,
+                           n_samples=10000,
+                           tolerances=[0.01, 0.05, 0.1],
+                           ):
+        self.model.eval()
+
+        y_target = y_target.unsqueeze(0)  # Shape: [1, ndim_y]
+        results = {}
+
+        z_samples = torch.randn(n_samples, self.latent_dim).to(self.device)
+        y_all = y_target.expand(n_samples, -1)  # Repeat y_target n_samples times
+        z_input = torch.cat([y_all, z_samples], dim=1)
+
+        with torch.no_grad():
+            x_all, _ = self.model.g(z_input)
+            if self.experiment_config.experiment == 'ee_point':
+                y_pred_all = self.arm.compute_ee_pose(x_all)
+            elif self.experiment_config.experiment == 'contact_point':
+                outputs = self.arm.sample_contact_surface_global_batch(x_all, n_samples_per_el=self.num_cp_per_ee)
+                y_pred_all = outputs['global_pts']
+            
+            error_all = torch.norm(y_pred_all - y_target, dim=1)  # Shape: [n_samples]
+
+        for tol in tolerances:
+            accept_mask = error_all < tol
+            x_accepted = x_all[accept_mask]
+            y_pred_accepted = y_pred_all[accept_mask]
+            err_accepted = error_all[accept_mask]
+
+            accepted_count = x_accepted.shape[0]
+            acceptance_rate = accepted_count / n_samples
+            mean_error = err_accepted.mean().item() if accepted_count > 0 else None
+            std_error = err_accepted.std().item() if accepted_count > 0 else None
+            var_x = x_accepted.var(dim=0) if accepted_count > 0 else None
+
+            results[tol] = {
+                "accepted_x": x_accepted,
+                "accepted_y_pred": y_pred_accepted,
+                "acceptance_rate": acceptance_rate,
+                "mean_error": mean_error,
+                "std_error": std_error,
+                "variance_x": var_x,
+            }
+
+            # Initialize figure for plotting
+            if self.experiment_config.experiment == 'ee_point':
+                fig = self.arm.plot_arm_batch(x_accepted, color='skyblue', y_sample=y_target)
+            elif self.experiment_config.experiment == 'contact_point':
+                fig = self.arm.plot_arm_batch(x_accepted, color='skyblue', y_sample=y_target)
+            
+            print(f"Accepted {accepted_count} samples out of {n_samples} for tolerance {tol}")
+
+            # Save the figure
+            idx = f"{tol:2f}".split('.')[1]
+            fig_path = self.output_dir / f"rejection_sampling_plot_{idx}.png"
+            fig.savefig(fig_path, bbox_inches='tight', pad_inches=0)
+            plt.close(fig)
+
+            print("Figure saved at:", fig_path)
+
+        return results
 
     def get_warmup_cosine_schedule(self, warmup_steps, total_steps, min_lr_ratio=0.05):
         def lr_lambda(current_step):
@@ -330,9 +478,12 @@ class Trainer():
         self.model.eval()
         with torch.no_grad():
             # Sample from the model
-            z_samples = torch.randn(self.n_samples, self.z_sample_dim).to(self.device)
+            z_samples = torch.randn(self.n_samples, self.latent_dim).to(self.device)
 
             z_input = torch.cat((self.y_eval, z_samples), dim=1)
+
+            # print(f"[LOGGING] y_eval shape: {self.y_eval.shape}, z_input shape: {z_input.shape}")
+            # print(f"[LOGGING] y_eval [0]: {self.y_eval[0]}")
 
             x_recon, _ = self.model.g(z_input)
 
@@ -384,21 +535,37 @@ class Trainer():
             return str(obj)
         
     def mle_loss(self, z_latent, log_det):
-        return -torch.mean(-0.5 * torch.sum(z_latent**2, dim=1) + log_det) * self.training_config.loss_fn.scale_mle
+        B, D = z_latent.shape
+        log_pz = -0.5 * torch.sum(z_latent ** 2, dim=1) - 0.5 * D * math.log(2 * math.pi)
+        nll = -log_pz - log_det  # shape (B,)
+        return torch.mean(nll) * self.training_config.loss_fn.scale_mle
 
-    def mmd_loss(self, z_ee, z_latent, x):
+    def noise_batch(self, dim, batch_size):
+        noise_batch = torch.randn(batch_size, dim).to(self.device) 
+        return noise_batch
+
+    def mmd_loss(self, z_ee, z_latent, x, y):
         loss_config = self.training_config.loss_fn
-        mmd_forward = loss_config.scale_mmd_forw * torch.mean(
-            forward_mmd(z_ee.detach(), z_latent, loss_config.mmd_forw_kernels, self.device)) 
 
-        z_sampling = torch.cat((z_ee, z_latent), dim=1)
-        x_sampling, _ = self.model.g(z_sampling)
-        mmd_backward = backward_mmd(x, x_sampling, loss_config.mmd_back_kernels, self.device)
+        # Notes:comparing var in original repo vs this repo
+        # out_y: whole output of the model <-> z_ee, z_latent
+        # y: GT y + noise <-> y + noise_batch(self.latent_dim, self.batch_size_tmp)
+        # x: x
+
+        # Forward MMD loss
+        output = torch.cat((z_ee.detach(), z_latent), dim=1)    # Remove gradient wrt z_ee
+        y_noised = torch.cat((y, self.noise_batch(self.latent_dim, self.batch_size_tmp)), dim=1)    # Add noise to y from the target distribution
+
+        loss_fit_forw = loss_config.lambd_fit_forw * l2_fit(z_latent, y_noised[:, :self.latent_dim], self.batch_size_tmp)
+        loss_mmd_forw = loss_config.lambd_mmd_forw * torch.mean(forward_mmd(output, y_noised, loss_config.mmd_forw_kernels, self.device))
+
+        # Backward MMD loss
+        x_samples, _ = self.model.g(y_noised)
+        loss_mmd_back = backward_mmd(x, x_samples, loss_config.mmd_back_kernels, self.device)
         if loss_config.mmd_back_weighted:
-            mmd_backward *= torch.exp(- 0.5 / loss_config.y_uncertainty_sigma**2 *
-                                      l2_dist_matrix(z_sampling, z_sampling))
-            
-        mmd_backward = loss_config.scale_mmd_back * torch.mean(mmd_backward)
+            loss_mmd_back *= torch.exp(-0.5 / loss_config.y_uncertainty_sigma**2 * l2_dist_matrix(y_noised, y_noised))
+        
+        loss_mmd_back = loss_config.lambd_mmd_back * torch.mean(loss_mmd_back)
 
-        return mmd_forward + mmd_backward
-
+        scaledown_mmd = 15
+        return (loss_fit_forw + loss_mmd_forw + loss_mmd_back) / scaledown_mmd

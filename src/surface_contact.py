@@ -152,7 +152,7 @@ class RobotArm2D_CP:
         print("Plot saved to 'robot_arm_with_surface.png'")
         plt.close()
 
-    def plot_arm(self, x, l, title="Robot Arm", color='blue', y_sample=None):
+    def plot_arm(self, x, l, title=None, color='blue', y_sample=None):
         """
         x: joint configuration tensor of shape (1, 4)
         l: tensor of link lengths (3,)
@@ -211,7 +211,8 @@ class RobotArm2D_CP:
                 y_sample = y_sample.detach().cpu().numpy()
             ax.plot(y_sample[0], y_sample[1], 'rx', markersize=10, label="Target EE")
 
-        ax.set_title(title)
+        if title is not None:
+            ax.set_title(title)
         ax.set_xlim(-0.25, 3.5)
         ax.set_ylim(-2, 2)
         ax.set_aspect('equal')
@@ -220,7 +221,7 @@ class RobotArm2D_CP:
 
         return fig
     
-    def plot_arm_batch(self, x_batch, title="Robot Arm", color='blue', y_sample=None):
+    def plot_arm_batch(self, x_batch, title=None, color='blue', y_sample=None):
         """
         x_batch: tensor of shape (B, 4), where B is the number of joint configurations
         l: tensor of link lengths (3,)
@@ -233,7 +234,8 @@ class RobotArm2D_CP:
         if x_batch.ndim == 1:
             x_batch = x_batch.unsqueeze(0)
 
-        fig, ax = plt.subplots(figsize=(12, 12))
+        fig = plt.figure(figsize=(20, 20))
+        ax = fig.add_axes([0, 0, 1, 1]) 
 
         for i, x in enumerate(x_batch):
             joint_positions = self.compute_joint_positions(x)
@@ -247,11 +249,12 @@ class RobotArm2D_CP:
             base_x, base_y = xs[0], ys[0]
             ee = joint_positions[-1].detach().numpy()
 
-            alpha = 1.0 if i == 0 else 0.1
-            if i != 0:
-                ax.plot(xs, ys, '+-', linewidth=3, alpha=alpha, color='skyblue')
+            if i != len(x_batch) - 1:
+                alpha = 0.1
+                ax.plot(xs, ys, '+-', linewidth=8, alpha=alpha, color=color)
             else:
-                ax.plot(xs, ys, '+-', linewidth=3, alpha=alpha, color='red', label="Arm" if i == 0 else None)
+                alpha = 1.0
+                ax.plot(xs, ys, '+-', linewidth=8, alpha=alpha, color='green', label="Arm" if i == len(x_batch) - 1 else None)
 
             # Plot semicircle for end-effector surface
             if ee_pose is not None and ee_angle is not None:
@@ -271,7 +274,7 @@ class RobotArm2D_CP:
                 ax.plot(semicircle_global[:, 0], semicircle_global[:, 1], color='black', alpha=alpha, label="EE Surface" if i == 0 else None)
 
             # Plot base triangle only for first arm
-            if i == 0:
+            if i == len(x_batch) - 1:
                 base_triangle = plt.Polygon([
                     (base_x - 0.1, base_y),
                     (base_x + 0.1, base_y),
@@ -282,14 +285,17 @@ class RobotArm2D_CP:
         # Plot target EE if provided
         if y_sample is not None:
             target = y_sample[0].cpu().numpy()
-            ax.plot(target[0], target[1], 'bo', markersize=8, label="Target EE")
+            ax.plot(target[0], target[1], 'ro', markersize=20, label="Target EE")
 
-        ax.set_title(title)
-        ax.set_xlim(-0.25, 3.5)
-        ax.set_ylim(-2, 2)
+        if title is not None:
+            ax.set_title(title)
+        ax.set_xlim(-0.25, 2.0)
+        # ax.set_ylim(-2, 2)
+        ax.set_ylim(-1.25, 1.25)
         ax.set_aspect('equal')
         ax.grid(True)
-        ax.legend()
+        ax.tick_params(axis='both', which='major', labelsize=25)  # Bigger tick labels
+        ax.legend(fontsize=25)
 
         return fig
 
@@ -306,10 +312,7 @@ class RobotArm2D:
         l: (n-1,) tensor: link lengths for each joint (l1, l2, ..., l_(n-1))
 
         Returns the (x, y) position of the end-effector.
-        """
-        # Base translation along y-axis
-        y_trans = x[:, 0]
-        
+        """       
         # Joint angles (thetas)
         thetas = x[:, 1:]
         
@@ -317,22 +320,22 @@ class RobotArm2D:
         link_lengths = self.l
         
         # Initialize the end-effector position components (x, y)
-        x_pos = torch.zeros(x.size(0))  # x position of the end-effector
-        y_pos = y_trans.clone()         # y position starts with base translation
+        x_trans = torch.zeros(x.size(0)).to(device=x.device)  # x position of the end-effector
+        y_trans = x[:, 0]         # Base translation along y-axis
 
         # Iterate through the links to compute the end-effector position
         # for i in range(thetas.size(1)):
         #     x_pos += link_lengths[i] * torch.cos(thetas[:, i])  # Add x displacement from the link
         #     y_pos += link_lengths[i] * torch.sin(thetas[:, i])  # Add y displacement from the link
-        x_pos = (link_lengths * torch.cos(thetas)).sum(dim=1)
-        y_pos = (link_lengths * torch.sin(thetas)).sum(dim=1)
+        x_pos = x_trans + (link_lengths * torch.cos(thetas)).sum(dim=1)
+        y_pos = y_trans + (link_lengths * torch.sin(thetas)).sum(dim=1)
 
         # Stack the x and y positions into a tensor to represent the end-effector's position
         ee_pos = torch.stack([x_pos, y_pos], dim=1)
         return ee_pos
 
 
-    def plot_arm(self, x, title="Robot Arm", color='blue', y_sample=None):
+    def plot_arm(self, x, title=None, color='blue', y_sample=None):
         """
         x: joint configuration tensor of shape (N, n) 
             - x[:, 0] = base y translation
@@ -345,6 +348,7 @@ class RobotArm2D:
         # Extract base translation and joint angles
         y_trans = x[0]  # Base translation along y-axis
         thetas = x[1:]  # Joint angles (theta1, theta2, ..., theta_(n-1))
+        thetas = torch.tensor(thetas, dtype=torch.float32)  # Ensure thetas is a tensor
         
         # Link lengths
         link_lengths = self.l.cpu().numpy()
@@ -379,24 +383,25 @@ class RobotArm2D:
         ax.add_patch(base_triangle)
 
         # Mark the End-Effector (EE)
-        ax.plot(ee[0], ee[1], 'ro', markersize=8, label="Predicted EE")
+        # ax.plot(ee[0], ee[1], 'ro', markersize=8, label="Predicted EE")
         
         # Plot y_sample if provided
         if y_sample is not None:
             y_sample = y_sample.squeeze().cpu().numpy()
-            ax.plot(y_sample[0], y_sample[1], 'bo', markersize=8, label="Target EE")
+            ax.plot(y_sample[0], y_sample[1], 'bo', markersize=12, label="Target EE")
         
         # Set plot title and limits
-        ax.set_title(title)
+        if title is not None:
+            ax.set_title(title)
         ax.set_xlim(-1, np.sum(link_lengths) + 1)  # Adjust limits based on the total length
         ax.set_ylim(-2, 2)
         ax.set_aspect('equal')
         ax.grid(True)
-        ax.legend()
+        ax.legend(fontsize=18)
 
         return fig
     
-    def plot_arm_batch(self, x_list, title="Robot Arm", color='blue', y_sample=None):
+    def plot_arm_batch(self, x_list, title=None, color='blue', y_sample=None):
         """
         x_list: list or tensor of joint configurations of shape (B, n) or list of (n,)
             - x[:, 0] = base y translation
@@ -413,7 +418,8 @@ class RobotArm2D:
 
         link_lengths = self.l.cpu().numpy()
 
-        fig, ax = plt.subplots()
+        fig = plt.figure(figsize=(20, 20))
+        ax = fig.add_axes([0, 0, 1, 1]) 
 
         for i, x in enumerate(x_list):
             y_trans = x[0]
@@ -429,14 +435,16 @@ class RobotArm2D:
             # alpha = 1.0 if i == 0 else 0.3
 
             # ax.plot(xs, ys, 'o-', color=color, linewidth=3, alpha=alpha, label=f"Arm {i+1}" if i == 0 else None)
-            alpha = 1.0 if i == 0 else 0.1
-            if i != 0:
-                ax.plot(xs, ys, '+-', linewidth=3, alpha=alpha, color='skyblue')
+            
+            if i != len(x_list) - 1:
+                alpha = 0.1
+                ax.plot(xs, ys, '+-', linewidth=8, alpha=alpha, color=color)
             else:
-                ax.plot(xs, ys, '+-', linewidth=3, alpha=alpha, color='red', label="Arm" if i == 0 else None)
+                alpha = 1.0
+                ax.plot(xs, ys, '+-', linewidth=8, alpha=alpha, color='blue', label="Arm" if i == len(x_list) - 1 else None)
 
             # Plot base triangle for the first arm only
-            if i == 0:
+            if i == len(x_list) - 1:
                 base_triangle = plt.Polygon([
                     (-0.1, y_trans), 
                     (0.1, y_trans), 
@@ -446,18 +454,21 @@ class RobotArm2D:
 
                 # Mark the End-Effector
                 ee = joint_positions[-1]
-                ax.plot(ee[0], ee[1], 'ro', markersize=8, label="Predicted EE")
+                ax.plot(ee[0], ee[1], 'ro', markersize=20, label="Predicted EE")
 
         if y_sample is not None:
             target = y_sample[0].cpu().numpy()
-            ax.plot(target[0], target[1], 'bo', markersize=8, label="Target EE")
+            ax.plot(target[0], target[1], 'bo', markersize=20, label="Target EE")
 
-        ax.set_title(title)
-        ax.set_xlim(-1, np.sum(link_lengths) + 1)
-        ax.set_ylim(-2, 2)
+        if title is not None:
+            ax.set_title(title)
+        ax.set_xlim(-0.25, 2.0)
+        # ax.set_ylim(-2, 2)
+        ax.set_ylim(-1.25, 1.25)
         ax.set_aspect('equal')
         ax.grid(True)
-        ax.legend()
+        ax.tick_params(axis='both', which='major', labelsize=25)  # Bigger tick labels
+        ax.legend(fontsize=25)
 
         return fig
 
@@ -465,21 +476,28 @@ class RobotArm2D:
 if __name__ == '__main__':
     torch.manual_seed(0)
     sigma = torch.tensor([0.25, 0.5, 0.5, 0.5])
-    x_batch = torch.randn(2, 4) * sigma  # (B, 4)
+    x_batch = torch.randn(1, 4) * sigma  # (B, 4)
 
-    arm = RobotArm2D_CP(link_lengths=torch.tensor([0.5, 0.5, 1.0]))
+    # arm = RobotArm2D_CP(link_lengths=torch.tensor([0.5, 0.5, 1.0]))
 
-    outputs = arm.sample_contact_surface_global_batch(x_batch, n_samples_per_el=3)
+    # outputs = arm.sample_contact_surface_global_batch(x_batch, n_samples_per_el=3)
 
-    # Plot only first sample in batch
-    global_pts = outputs['global_pts'][0]
-    x_batch = outputs['x_batch'][0]
-    ee_pos = outputs['ee_pos'][0]
-    ee_angle = outputs['ee_angle'][0]
+    # # Plot only first sample in batch
+    # global_pts = outputs['global_pts'][0]
+    # x_batch = outputs['x_batch'][0]
+    # ee_pos = outputs['ee_pos'][0]
+    # ee_angle = outputs['ee_angle'][0]
 
-    joints = arm.compute_joint_positions(x_batch)
+    # joints = arm.compute_joint_positions(x_batch)
 
-    arm.plot(joints, global_pts, ee_pos, ee_angle)
+    # arm.plot(joints, global_pts, ee_pos, ee_angle)
 
-    fig = arm.plot_arm(x_batch, arm.l, title="Robot Arm with Contact Surface", y_sample=global_pts)
+    # fig = arm.plot_arm(x_batch, arm.l, title="Robot Arm with Contact Surface", y_sample=global_pts)
+    # fig.savefig("robot_arm_plot.png")
+
+    arm = RobotArm2D(link_lengths=torch.tensor([0.5, 0.5, 1.0]))
+
+    ee_pos = arm.compute_ee_pose(x_batch)
+
+    fig = arm.plot_arm(x_batch[0], title="Robot Arm", color='blue', y_sample=ee_pos[0])
     fig.savefig("robot_arm_plot.png")

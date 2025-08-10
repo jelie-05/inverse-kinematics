@@ -1,0 +1,35 @@
+experiment:
+  experiment_name: 'mle_cp'
+  experiment: 'contact_point' # 'contact_point' or 'ee_point'
+  num_cp_per_ee: 1 # Number of contact points per end-effector position for training using contact points
+  sampling_latent: 'add_noise' # 'add_noise' or 'pure_noise'
+  run_id: '20250806_001'
+training:
+  batch_size: 256
+  num_sampling: 75000
+  optimizer:
+    name: 'adamw'
+    lr: 0.005
+    weight_decay: 0.0001
+  scheduler:
+    name: 'cosine'  # 'cosine': using 
+    warmup_steps: 0.05 # percentage of total steps
+  loss_fn:
+    distribution_loss: 'mle' # 'mle' or 'mmd'
+    scale_mle: 0.05 # scaling factor for the distribution loss
+    noise_scale: 0.001 # scale of noise added to z_latent
+    mmd_forw_kernels:
+      - [0.2, 2]
+      - [1.5, 2]
+      - [3.0, 2]
+    mmd_back_kernels:
+      - [0.2, 0.1]
+      - [0.2, 0.5]
+      - [0.2, 2]
+    mmd_back_weighted: False
+  seed: 42
+model:
+  name: 'realnvp1d'
+  num_blocks: 6
+  hidden_dim: 128
+  io_dimension: 4

@@ -16,14 +16,15 @@ class SchedulerConfig:
 @dataclass
 class LossConfig:
     distribution_loss: str = 'mmd'  # Options: 'mle' or 'mmd'
-    scale_mle: float = 1.0  # Scaling factor for the distribution loss
-    noise_scale: float = 0.01  # Scale of noise added to z_latent
-    scale_mmd_forw: float = 50.
-    scale_mmd_back: float = 500.0
-    y_uncertainty_sigma: float = 0.12 * 4
+    scale_mle: Optional[float] = 1.0  # Scaling factor for the distribution loss
+    noise_scale: Optional[float] = 0.01  # Scale of noise added to z_latent
+    lambd_mmd_forw: Optional[float] = 50.
+    lambd_mmd_back: Optional[float] = 500.0
+    lambd_fit_forw: Optional[float] = 1.0
+    y_uncertainty_sigma: Optional[float] = 0.12 * 4
     mmd_forw_kernels: Optional[List[Tuple[float, float]]] = None
     mmd_back_kernels: Optional[List[Tuple[float, float]]] = None
-    mmd_back_weighted: bool = False
+    mmd_back_weighted: Optional[bool] = False
 
 @dataclass
 class TrainingConfig:
