@@ -1,0 +1,36 @@
+experiment:
+  experiment_name: 'panda_3d_ik'
+  experiment: 'contact_point' # reusing this field for now, though it's 3D
+  num_cp_per_ee: 1
+  sampling_latent: 'add_noise'
+  run_id: 'run_3d_001'
+
+training:
+  batch_size: 256
+  num_sampling: 20000 
+  optimizer:
+    name: 'adam'
+    lr: 0.0005
+    weight_decay: 0.00001
+  scheduler:
+    name: 'cosine'
+    warmup_steps: 0.05
+  loss_fn:
+    distribution_loss: 'mmd'
+    scale_mle: 1.0
+    noise_scale: 0.01
+    lambd_fit_forw: 10.0
+    lambd_mmd_forw: 50.0
+    lambd_mmd_back: 500.0
+    lambd_reconstruct: 10.0
+    mmd_forw_kernels: [[0.2, 2], [1.5, 2], [3.0, 2]]
+    mmd_back_kernels: [[0.2, 0.1], [0.2, 0.5], [0.2, 2]]
+    
+  seed: 42
+
+model:
+  name: 'realnvp1d'
+  num_blocks: 8
+  hidden_dim: 256
+  io_dimension: 14 # 7 joint angles + 7 pose dims (3 pos + 4 quat)
+  latent_dim: 7 # Same as output dim (joints)

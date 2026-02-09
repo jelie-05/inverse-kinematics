@@ -13,3 +13,13 @@ python3 -m src.train --config <config-yaml-file>
 ```bash
 python3 -m src.inference_eval --config <config-yaml-file>
 ```
+
+
+## 3D
+```
+python src/utils/3d_generator.py
+```
+
+```
+python src/train_3D.py --config config/config_3d.yaml
+```

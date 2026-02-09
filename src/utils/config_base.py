@@ -20,6 +20,7 @@ class LossConfig:
     noise_scale: Optional[float] = 0.01  # Scale of noise added to z_latent
     lambd_mmd_forw: Optional[float] = 50.
     lambd_mmd_back: Optional[float] = 500.0
+    lambd_reconstruct: Optional[float] = 1.0
     lambd_fit_forw: Optional[float] = 1.0
     y_uncertainty_sigma: Optional[float] = 0.12 * 4
     mmd_forw_kernels: Optional[List[Tuple[float, float]]] = None
