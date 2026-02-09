@@ -1,6 +1,6 @@
 # Team 5 - Invertible Neural Networks for Inverse Kinematics
 
-This project implements Invertible Neural Networks (INNs) using the RealNVP framework to solve the inverse kinematics problem for a simulated 4-DoF planar robotic manipulator. The framework supports multiple end-effector geometries and includes evaluation tools for accuracy and solution diversity.
+This project implements Invertible Neural Networks (INNs) using the RealNVP framework to solve the inverse kinematics problem for a simulated 4-DoF planar robotic manipulator and 7-DoF panda robot arm. The framework supports multiple end-effector geometries and includes evaluation tools for accuracy and solution diversity.
 
 ## Usage
 
